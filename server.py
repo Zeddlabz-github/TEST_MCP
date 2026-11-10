@@ -92,7 +92,6 @@ async def get_current_weather(city: str) -> str:
             }
 
             return json.dumps(result, indent=2)
-
     except httpx.TimeoutException:
         logging.exception("Weather API request timed out")
         return json.dumps({
@@ -101,8 +100,12 @@ async def get_current_weather(city: str) -> str:
 
     except httpx.HTTPStatusError as error:
         logging.exception("Weather API returned an HTTP error")
+        logging.error("Response body: %s", error.response.text)
+        logging.error("Response headers: %s", dict(error.response.headers))
+
         return json.dumps({
-            "error": f"Weather API error: {error.response.status_code}"
+            "error": f"Weather API error: {error.response.status_code}",
+            "details": error.response.text
         })
 
     except httpx.RequestError:
