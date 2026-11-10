@@ -4,120 +4,103 @@ import json
 import logging
 
 import httpx
+from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
-# Configure logging to stderr, not stdout
+# Load local environment variables from .env
+load_dotenv()
+
+# Avoid logging HTTP request URLs, which may contain the API key
 logging.basicConfig(level=logging.INFO)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 # Create MCP server
 mcp = FastMCP(
     "Weather Research MCP",
-    auth=None,
     host="0.0.0.0",
     port=int(os.environ.get("PORT", "10000")),
 )
 
 
-
 @mcp.tool()
 async def get_current_weather(city: str) -> str:
-    """
-    Get current weather for a city using Open-Meteo.
+    """Get current weather conditions for a city using WeatherAPI.com."""
 
-    Args:
-        city: City name, such as Ludhiana, Delhi or London.
-    """
-    city = city.strip()
+    api_key = os.environ.get("WEATHER_API_KEY")
 
-    if not city or len(city) > 100:
-        return "Please enter a valid city name."
+    if not api_key:
+        return json.dumps({
+            "error": "WEATHER_API_KEY is not configured."
+        })
+
+    url = "https://api.weatherapi.com/v1/current.json"
+
+    params = {
+        "key": api_key,
+        "q": city,
+        "aqi": "no",
+    }
 
     try:
         async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.get(url, params=params)
 
-            # Find city coordinates
-            geo_response = await client.get(
-                "https://geocoding-api.open-meteo.com/v1/search",
-                params={
-                    "name": city,
-                    "count": 1,
-                    "language": "en",
-                    "format": "json",
-                },
-            )
+            if response.is_error:
+                try:
+                    error_data = response.json()
+                except ValueError:
+                    error_data = {"message": "Weather provider returned an error."}
 
-            geo_response.raise_for_status()
-            geo_data = geo_response.json()
+                logging.error(
+                    "WeatherAPI request failed with status %s",
+                    response.status_code,
+                )
 
-            results = geo_data.get("results")
-
-            if not results:
                 return json.dumps({
-                    "error": f"No location found for {city}"
+                    "error": "WeatherAPI request failed.",
+                    "status_code": response.status_code,
+                    "details": error_data.get("error", error_data),
                 })
 
-            location = results[0]
-            latitude = location["latitude"]
-            longitude = location["longitude"]
-
-            # Retrieve current weather
-            weather_response = await client.get(
-                "https://api.open-meteo.com/v1/forecast",
-                params={
-                    "latitude": latitude,
-                    "longitude": longitude,
-                    "current": (
-                        "temperature_2m,"
-                        "relative_humidity_2m,"
-                        "apparent_temperature,"
-                        "is_day,"
-                        "precipitation,"
-                        "weather_code,"
-                        "wind_speed_10m"
-                    ),
-                    "timezone": "auto",
-                },
-            )
-
-            weather_response.raise_for_status()
-            weather_data = weather_response.json()
+            data = response.json()
 
             result = {
-                "city": location.get("name"),
-                "country": location.get("country"),
-                "latitude": latitude,
-                "longitude": longitude,
-                "current_weather": weather_data.get("current"),
-                "units": weather_data.get("current_units"),
+                "location": {
+                    "city": data["location"]["name"],
+                    "region": data["location"]["region"],
+                    "country": data["location"]["country"],
+                    "local_time": data["location"]["localtime"],
+                },
+                "current_weather": {
+                    "temperature_c": data["current"]["temp_c"],
+                    "feels_like_c": data["current"]["feelslike_c"],
+                    "condition": data["current"]["condition"]["text"],
+                    "humidity_percent": data["current"]["humidity"],
+                    "wind_kph": data["current"]["wind_kph"],
+                    "precipitation_mm": data["current"]["precip_mm"],
+                    "uv_index": data["current"]["uv"],
+                    "is_day": bool(data["current"]["is_day"]),
+                },
+                "provider": "WeatherAPI.com",
             }
 
             return json.dumps(result, indent=2)
+
     except httpx.TimeoutException:
-        logging.exception("Weather API request timed out")
         return json.dumps({
-            "error": "Weather API request timed out. Please try again."
-        })
-
-    except httpx.HTTPStatusError as error:
-        logging.exception("Weather API returned an HTTP error")
-        logging.error("Response body: %s", error.response.text)
-        logging.error("Response headers: %s", dict(error.response.headers))
-
-        return json.dumps({
-            "error": f"Weather API error: {error.response.status_code}",
-            "details": error.response.text
+            "error": "WeatherAPI request timed out. Please try again."
         })
 
     except httpx.RequestError:
-        logging.exception("Could not connect to weather API")
+        logging.exception("Could not connect to WeatherAPI")
         return json.dumps({
-            "error": "Could not connect to Open-Meteo. Check your internet."
+            "error": "Could not connect to the weather service."
         })
 
     except (KeyError, ValueError):
-        logging.exception("Unexpected weather API response")
+        logging.exception("Unexpected WeatherAPI response")
         return json.dumps({
-            "error": "Received an unexpected response from Open-Meteo."
+            "error": "Could not process the weather service response."
         })
 
 
