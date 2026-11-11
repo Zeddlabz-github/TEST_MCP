@@ -3,3 +3,4 @@ httpx
 uvicorn
 starlette
 python-dotenv
+psycopg[binary]>=3.2,<4
